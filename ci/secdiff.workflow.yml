@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Munim, Inc. (MV2). Made with AI agents working in MV2's name.
+#
+# DRAFT for review. To enable it, a maintainer copies this file unchanged to
+# .github/workflows/secdiff.yml (MV2's commit tool may not write workflow files).
+#
+# Amendment A2: runs the pre-registered study as written in a disposable
+# Ubuntu container with Docker's default settings, as in the README (26.04 LTS and 26.10) on a GitHub-hosted runner,
+# then commits the outputs to results/actions/<UTC stamp>/ubuntu-<version>/.
+# Triggers: by hand, or by a commit that changes ci/request.txt.
+name: secdiff
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["ci/request.txt"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: secdiff
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["26.04", "26.10"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run in ubuntu:${{ matrix.image }}
+        run: |
+          mkdir -p "out/ubuntu-${{ matrix.image }}"
+          docker run --rm \
+            -v "$PWD:/src:ro" \
+            -v "$PWD/out/ubuntu-${{ matrix.image }}:/out" \
+            "ubuntu:${{ matrix.image }}" \
+            bash /src/ci/run-in-container.sh
+      - name: Show summary
+        if: always()
+        run: |
+          f="out/ubuntu-${{ matrix.image }}/summary.md"
+          if [ -f "$f" ]; then head -c 20000 "$f"; else echo "no summary.md"; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: out-ubuntu-${{ matrix.image }}
+          path: out/
+          retention-days: 90
+
+  commit:
+    needs: run
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: out-*
+          merge-multiple: true
+          path: dl
+      - name: Commit results
+        run: |
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          dest="results/actions/$stamp"
+          mkdir -p "$dest"
+          cp -r dl/. "$dest/"
+          echo "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" > "$dest/RUN_URL.txt"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add results
+          git commit -m "Study results from Actions run ${{ github.run_id }} (amendment A2)"
+          git pull --rebase origin main
+          git push origin HEAD:main
